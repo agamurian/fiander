@@ -1,14 +1,15 @@
 # fiander
 filemanager for windows with ranger-like navigation style and vim keybindings, code highlighting and clipboard management
 
-<code>
-fiander - full-featured version with text selection
+<code>fiander - full-featured version with text selection
 - curses TUI with vim-like bindings + mouse support
 - autoscroll, scrolloff, Ctrl-U/D for previews
 - syntax-highlighted preview (Gruvbox theme)
 - clipboard + catlsr
 - TEXT SELECTION: Select multiple lines with mouse or v/V keys, auto-copy to clipboard
 </code>
+
+-----------------------------------------------
 
 code highlighting via pigments. standart terminal colors.
 line numbers, selection mode with v
