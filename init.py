@@ -1,179 +1,182 @@
 #!/usr/bin/env python3
-import curses, subprocess, os, sys, shutil, traceback, time, random
+# fiander_zen_clipfix3_inverted.py — emoji width fixes + simple inverted selection
+# This variant uses curses.A_REVERSE for selection highlighting in the code preview
+
+from __future__ import annotations
+import os, sys, locale, time, fnmatch, shutil, subprocess, traceback, io
 from pathlib import Path
-import fnmatch, io
-FOLDER_EMOJI = "📁"
-FILE_EMOJI = "📄"
+from dataclasses import dataclass, field
+
+# UTF-8 bootstrap
+try: locale.setlocale(locale.LC_ALL, '')
+except Exception: pass
+if os.name == 'nt':
+    try:
+        import ctypes
+        ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+        ctypes.windll.kernel32.SetConsoleCP(65001)
+    except Exception:
+        pass
+try:
+    sys.stdout.reconfigure(encoding='utf-8'); sys.stderr.reconfigure(encoding='utf-8')
+except Exception:
+    pass
+
+# Optional libs
+try:
+    from wcwidth import wcwidth, wcswidth
+    HAVE_WCWIDTH = True
+except Exception:
+    HAVE_WCWIDTH = False
+
+try:
+    import curses
+except Exception:
+    raise SystemExit("curses not available. On Windows: pip install windows-curses")
+
 try:
     from pygments import lex
     from pygments.lexers import guess_lexer_for_filename, TextLexer
     from pygments.token import Token
-    PYGMENTS_AVAILABLE=True
-except ImportError:
-    PYGMENTS_AVAILABLE=False
-PREVIEW_MAX_LINES = 400
-PREVIEW_MAX_CHARS_PER_LINE = 300
-MIN_HEIGHT = 8
-MIN_WIDTH = 40
-ERROR_LOG = Path("fiander_error.log")
-DEFAULT_IGNORE_DIRS = {"__pycache__","node_modules",".git",".hg",".venv","venv","env",".idea",".pytest_cache","dist","build"}
-DEFAULT_IGNORE_PATTERNS = {"*.pyc","*.pyo","*.pyd","*.so","*.dll","*.exe","*.class","*.jar","*.lock","*.log","*.db","*.sqlite","*.bak","*.tmp","*.DS_Store"}
-DEFAULT_IGNORE_NAMES = {"Thumbs.db"}
-SPLITTER = "-"*69
-DEFAULT_PREPROMPT = "please analyze this project, add tell how to possibly extend it\n"
-FILETYPE_EMOJI = {
-    ".py": "🐍", ".pyc": "🐍", ".pyo": "🐍", ".pyd": "🐍", ".pyw": "🐍",
-    ".js": "🟨", ".mjs": "🟨", ".cjs": "🟨",
-    ".jsx": "🔷", ".ts": "🔷", ".tsx": "🔷",
-    ".c": "🔧", ".cpp": "🔧", ".cc": "🔧", ".cxx": "🔧", ".h": "📘", ".hpp": "📘", ".hh": "📘",
-    ".java": "☕", ".class": "☕", ".jar": "☕",
-    ".go": "🐹", ".rs": "🦀", ".rb": "💎", ".erb": "💎",
-    ".php": "🐘", ".phtml": "🐘", ".php3": "🐘", ".php4": "🐘", ".php5": "🐘", ".phps": "🐘",
-    ".cs": "🌀", ".vb": "🌀", ".fs": "🌀",
-    ".swift": "🕊️", ".dart": "🎯", ".kt": "🔶", ".kts": "🔶", ".scala": "🔷",
-    ".lua": "🌙", ".pl": "🐪", ".pm": "🐪", ".r": "📊", ".m": "🔴",
-    ".hs": "λ", ".lhs": "λ", ".elm": "🌳", ".clj": "🟣", ".cljs": "🟣",
-    ".erl": "⚡", ".ex": "⚡", ".exs": "⚡", ".ml": "🐫", ".mli": "🐫",
-    ".html": "🌐", ".htm": "🌐", ".xhtml": "🌐",
-    ".css": "🎨", ".scss": "🎨", ".sass": "🎨", ".less": "🎨", ".styl": "🎨",
-    ".vue": "💚", ".svelte": "🟠", ".astro": "🚀",
-    ".json": "🔢", ".json5": "🔢", ".jsonl": "🔢",
-    ".xml": "📄", ".yaml": "⚙️", ".yml": "⚙️", ".toml": "⚙️",
-    ".csv": "📊", ".tsv": "📊", ".xlsx": "📊", ".xls": "📊", ".ods": "📊",
-    ".md": "📝", ".markdown": "📝", ".rst": "📝", ".txt": "📄",
-    ".pdf": "📕", ".doc": "📄", ".docx": "📄", ".odt": "📄",
-    ".ppt": "📊", ".pptx": "📊", ".odp": "📊",
-    ".png": "🖼️", ".jpg": "🖼️", ".jpeg": "🖼️", ".gif": "🖼️", ".svg": "🖼️",
-    ".webp": "🖼️", ".bmp": "🖼️", ".ico": "🖼️", ".tiff": "🖼️", ".tif": "🖼️",
-    ".ai": "🎨", ".psd": "🎨", ".xcf": "🎨", ".sketch": "🎨",
-    ".mp3": "🎵", ".wav": "🎵", ".flac": "🎵", ".aac": "🎵", ".ogg": "🎵",
-    ".m4a": "🎵", ".wma": "🎵", ".aiff": "🎵",
-    ".mp4": "🎞️", ".mkv": "🎞️", ".avi": "🎞️", ".mov": "🎞️", ".wmv": "🎞️",
-    ".flv": "🎞️", ".webm": "🎞️", ".m4v": "🎞️", ".3gp": "🎞️",
-    ".zip": "📦", ".tar": "📦", ".gz": "📦", ".7z": "📦", ".rar": "📦",
-    ".bz2": "📦", ".xz": "📦", ".lz": "📦",
-    ".exe": "⚙️", ".dll": "⚙️", ".so": "⚙️", ".dylib": "⚙️",
-    ".deb": "📦", ".rpm": "📦", ".apk": "📦", ".appimage": "📦",
-    ".msi": "⚙️", ".pkg": "⚙️",
-    ".ini": "⚙️", ".cfg": "⚙️", ".conf": "⚙️", ".properties": "⚙️",
-    ".env": "🔧", ".gitignore": "🔧", ".gitattributes": "🔧",
-    ".sql": "🗄️", ".sqlite": "🗄️", ".db": "🗄️", ".mdb": "🗄️",
-    ".dump": "🗄️", ".backup": "🗄️",
-    ".sh": "🐚", ".bash": "🐚", ".zsh": "🐚", ".fish": "🐟",
-    ".ps1": "⚡", ".bat": "⚙️", ".cmd": "⚙️", ".vbs": "⚙️",
-    ".dockerfile": "🐳", ".Dockerfile": "🐳",
-    ".pem": "🔐", ".key": "🔐", ".crt": "🔐", ".cer": "🔐",
-    ".pfx": "🔐", ".p12": "🔐", ".csr": "🔐",
-    ".ttf": "🔤", ".otf": "🔤", ".woff": "🔤", ".woff2": "🔤", ".eot": "🔤",
-    ".blend": "🎨", ".obj": "📦", ".fbx": "📦", ".stl": "📦", ".dae": "📦",
-    ".epub": "📚", ".mobi": "📚", ".azw": "📚", ".azw3": "📚",
-    ".unity": "🎮", ".unitypackage": "🎮", ".uasset": "🎮",
-    ".gd": "🎮",
-    ".apk": "📱", ".ipa": "📱", ".aab": "📱",
-    ".pcap": "🌐", ".har": "🌐", ".curl": "🌐",
-    ".lock": "🔒", ".bak": "💾", ".tmp": "⏳",
-    ".license": "📄", ".LICENSE": "📄", "README": "📖", "readme": "📖",
-    ".git": "🐙", ".svn": "📚", ".hg": "🐍",
-    "Dockerfile": "🐳", "docker-compose.yml": "🐳", "Makefile": "🔧", "makefile": "🔧",
-    "Procfile": "⚙️", ".env.example": "🔧", ".env.local": "🔧",
-    ".ipynb": "📓", ".pkl": "🤖", ".h5": "🤖", ".hdf5": "🤖",
-    ".tflite": "🤖", ".onnx": "🤖",
-    ".kml": "🗺️", ".kmz": "🗺️", ".shp": "🗺️", ".geojson": "🗺️",
-    ".dwg": "📐", ".dxf": "📐", ".step": "📐", ".stp": "📐",
-    ".fits": "🔭", ".root": "🔬", ".hdf": "🔬",
-    ".ova": "🖥️", ".ovf": "🖥️", ".vmdk": "🖥️", ".vdi": "🖥️",
-    ".sol": "⛓️", ".vy": "⛓️",
-}
-def safe_read_text(path: Path, max_chars: int = PREVIEW_MAX_LINES*PREVIEW_MAX_CHARS_PER_LINE):
+    PYGMENTS = True
+except Exception:
+    PYGMENTS = False
+
+# Constants
+MIN_W, MIN_H = 40, 8
+PREVIEW_MAX = 400 * 300
+IGNORE_DIRS = {"__pycache__", "node_modules", ".git", ".venv", "venv", "env", ".idea"}
+IGNORE_PATTERNS = {"*.pyc", "*.pyo", "*.so", "*.dll", "*.exe", "*.log", "*.db", "*.DS_Store"}
+IGNORE_NAMES = {"Thumbs.db"}
+SPLIT = "-" * 69
+ERRLOG = Path("fiander_error.log")
+
+EMOJI = dict(
+    dir="📁", file="📄",
+    **{k: v for k, v in {
+        '.py':'🐍','.js':'📜','.html':'🌐','.css':'🎨','.md':'📝',
+        '.json':'📋','.yml':'⚙️','.yaml':'⚙️','.xml':'📋','.java':'☕',
+        '.go':'🐹','.rs':'🦀','.rb':'💎','.c':'🔧','.cpp':'🔧',
+        '.png':'🖼️','.jpg':'🖼️','.pdf':'📕','.zip':'📦','.mp4':'🎥',
+        '.mp3':'🎵'
+    }.items()}
+)
+SPECIAL = {'dockerfile':'🐳','readme.md':'📖','.gitignore':'🚫','.env':'🔐','license':'📜'}
+
+# Utilities
+def log_exc(e: BaseException):
     try:
-        with path.open("r", encoding="utf-8", errors="replace") as fh:
-            return fh.read(max_chars)
-    except Exception as e:
-        return f"[error reading file: {e}]"
-def is_text_file(path: Path, read_size: int = 4096):
+        ERRLOG.write_text("".join(traceback.format_exception(type(e), e, e.__traceback__)), encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+
+def is_emoji(ch: str) -> bool:
+    """Check if character is likely an emoji"""
+    if not ch: return False
+    cp = ord(ch)
+    # Common emoji ranges
+    return (
+        0x1F300 <= cp <= 0x1F9FF or  # Misc Symbols and Pictographs, Emoticons, etc.
+        0x2600 <= cp <= 0x26FF or    # Misc symbols
+        0x2700 <= cp <= 0x27BF or    # Dingbats
+        0xFE00 <= cp <= 0xFE0F or    # Variation selectors
+        0x1F000 <= cp <= 0x1F02F or  # Mahjong Tiles
+        0x1F0A0 <= cp <= 0x1F0FF     # Playing Cards
+    )
+
+def display_width(s: str) -> int:
+    """Calculate display width, treating emojis as width 2"""
+    if s is None: return 0
+    total = 0
+    for ch in s:
+        if is_emoji(ch):
+            total += 2  # Emojis are typically 2 cells wide
+            continue
+        if HAVE_WCWIDTH:
+            try:
+                cw = wcwidth(ch)
+                if cw < 0:  # Treat negative as width 1 (not 0)
+                    total += 1
+                else:
+                    total += cw
+            except Exception:
+                total += 1
+        else:
+            total += 1
+    return total
+
+def truncate_to(s: str, maxw: int, ell="") -> str:
+    """Truncate string to max display width"""
+    if s is None: return ""
+    if display_width(s) <= maxw: return s
+    if maxw <= 0: return ""
+    ell_w = display_width(ell)
+    aw = maxw - ell_w
+    if aw <= 0: return ell if ell_w <= maxw else ""
+    
+    out, w = [], 0
+    for ch in s:
+        if is_emoji(ch):
+            cw = 2
+        elif HAVE_WCWIDTH:
+            try:
+                cw = wcwidth(ch)
+                cw = 1 if cw < 0 else cw
+            except Exception:
+                cw = 1
+        else:
+            cw = 1
+        
+        if w + cw > aw:
+            break
+        out.append(ch)
+        w += cw
+    
+    return "".join(out) + ell
+
+def clipped_add(win, y, x, txt, maxw, attr=curses.A_NORMAL):
+    if maxw <= 0 or y < 0: return
     try:
-        with path.open("rb") as fh:
-            chunk = fh.read(read_size)
-            return not (chunk and b"\x00" in chunk)
+        out = truncate_to(str(txt) if txt is not None else "", maxw)
+        win.addnstr(y, x, out, maxw, attr)
+    except curses.error:
+        pass
+    except Exception:
+        try: win.addnstr(y, x, " " * maxw, maxw)
+        except Exception: pass
+
+def is_text_file(p: Path, n=4096):
+    try:
+        with p.open("rb") as fh:
+            chunk = fh.read(n)
+            return not (chunk and b'\x00' in chunk)
     except Exception:
         return False
-def should_skip(rel: Path, is_dir: bool, gitignore_patterns):
-    if is_dir and rel.name in DEFAULT_IGNORE_DIRS: return True
-    if rel.name in DEFAULT_IGNORE_NAMES: return True
-    for pat in DEFAULT_IGNORE_PATTERNS:
-        if fnmatch.fnmatch(rel.name, pat): return True
-    for pat in gitignore_patterns:
-        neg = pat.startswith("!")
-        pattern = pat[1:] if neg else pat
-        matched = fnmatch.fnmatch(rel.name, pattern)
-        if matched: return not neg
-    return False
-def walk_for_catlsr(root: Path):
-    gitignore_path = root / ".gitignore"
-    patterns = []
-    if gitignore_path.exists():
-        try:
-            patterns = [l.strip() for l in gitignore_path.read_text(errors="replace").splitlines() if l.strip() and not l.startswith("#")]
-        except Exception:
-            patterns = patterns
-    for top, dirs, files in os.walk(root, topdown=True):
-        top_path = Path(top)
-        rel_top = top_path.relative_to(root)
-        dirs[:] = [d for d in dirs if not should_skip(rel_top/Path(d), True, patterns)]
-        for f in files:
-            rel = rel_top / f if rel_top.parts else Path(f)
-            if should_skip(rel, False, patterns): continue
-            if rel.suffix.lower() == ".svg": continue
-            fp = root / rel
-            if not is_text_file(fp): continue
-            yield rel
-def walk_all_files(root: Path):
-    gitignore_path = root / ".gitignore"
-    patterns = []
-    if gitignore_path.exists():
-        try:
-            patterns = [l.strip() for l in gitignore_path.read_text(errors="replace").splitlines() if l.strip() and not l.startswith("#")]
-        except Exception:
-            patterns = patterns
-    for top, dirs, files in os.walk(root, topdown=True):
-        top_path = Path(top)
-        rel_top = top_path.relative_to(root)
-        dirs[:] = [d for d in dirs if not should_skip(rel_top/Path(d), True, patterns)]
-        for f in files:
-            rel = rel_top / f if rel_top.parts else Path(f)
-            if should_skip(rel, False, patterns): continue
-            yield rel
-def read_preprompt(root: Path):
-    p = root / "preprompt.txt"
-    if p.exists() and p.is_file():
-        try:
-            txt = p.read_text(encoding="utf-8", errors="replace")
-            return txt if txt.endswith("\n") else txt + "\n"
-        except Exception:
-            return DEFAULT_PREPROMPT
-    return DEFAULT_PREPROMPT
-def generate_catlsr_text(current: Path):
-    buf = io.StringIO()
-    any_file = False
-    for rel in walk_for_catlsr(current):
-        any_file = True
-        buf.write(f"{SPLITTER}\n{rel}\n{SPLITTER}\n")
-        fp = current / rel
-        try:
-            buf.write(fp.read_text(errors="replace"))
-        except Exception:
-            buf.write("")
-        buf.write("\n")
-    if not any_file: buf.write("[no files found (or all ignored)]\n")
-    buf.write(f"{SPLITTER}\npreprompt.txt (special frame)\n{SPLITTER}\n")
-    buf.write(read_preprompt(current)+"\n")
-    return buf.getvalue()
-def copy_to_clipboard_verbose(text: str):
-    if os.name=="nt":
+
+def safe_read(p: Path, maxc=PREVIEW_MAX):
+    try:
+        return p.read_text(encoding='utf-8', errors='replace')[:maxc]
+    except Exception as e:
+        return f"[error reading file: {e}]"
+
+def emoji_for(p: Path) -> str:
+    try:
+        if p.is_dir(): return EMOJI['dir']
+        n = p.name.lower()
+        if n in SPECIAL: return SPECIAL[n]
+        ext = p.suffix.lower()
+        return EMOJI.get(ext, EMOJI['file'])
+    except Exception:
+        return EMOJI['file']
+
+# Clipboard helper that prefers clip.exe on Windows
+def write_clipboard(text: str) -> tuple[bool, str]:
+    if os.name == 'nt':
         try:
             p = subprocess.Popen(["clip"], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             p.communicate(input=text.encode("utf-8"))
-            if p.returncode == 0: return True, "clip.exe"
+            if p.returncode == 0:
+                return True, "clip.exe"
         except Exception:
             pass
         try:
@@ -181,934 +184,726 @@ def copy_to_clipboard_verbose(text: str):
             pyperclip.copy(text)
             return True, "pyperclip"
         except Exception:
-            return False, "all Windows clipboard methods failed"
+            return False, "clipboard failed"
     else:
         try:
             import pyperclip
             pyperclip.copy(text)
-            return True,"pyperclip"
+            return True, "pyperclip"
         except Exception:
             pass
-        try:
-            if shutil.which("pbcopy"):
-                p = subprocess.Popen(["pbcopy"], stdin=subprocess.PIPE)
-                p.communicate(input=text.encode("utf-8"))
-                return p.returncode==0,"pbcopy"
-        except Exception:
-            pass
-        try:
-            if shutil.which("wl-copy"):
-                p = subprocess.Popen(["wl-copy"], stdin=subprocess.PIPE)
-                p.communicate(input=text.encode("utf-8"))
-                return p.returncode==0,"wl-copy"
-        except Exception:
-            pass
-        try:
-            if shutil.which("xclip"):
-                p = subprocess.Popen(["xclip","-selection","clipboard"], stdin=subprocess.PIPE)
-                p.communicate(input=text.encode("utf-8"))
-                return p.returncode==0,"xclip"
-        except Exception:
-            pass
-        return False,"no-clipboard-backend"
-def funny_suffix():
-    s = ["✨", "😺", "🤖", "🦄", "🍕", "🚀", "😜", "🎉", "👀", "🤷"]
-    return random.choice(s)
-class TState:
-    def __init__(self, cwd: Path):
-        self.cwd = cwd.resolve()
-        self.history = {}
+        for cmd in ("pbcopy", "wl-copy", "xclip"):
+            if shutil.which(cmd):
+                try:
+                    p = subprocess.Popen([cmd], stdin=subprocess.PIPE)
+                    p.communicate(input=text.encode("utf-8"))
+                    return (p.returncode == 0, cmd)
+                except Exception:
+                    pass
+        return False, "no-clipboard-backend"
+
+# File walking / search
+def load_gitignore(root: Path):
+    g = root / ".gitignore"
+    if not g.exists(): return []
+    try:
+        return [l.strip() for l in g.read_text(errors='replace').splitlines() if l.strip() and not l.startswith('#')]
+    except Exception:
+        return []
+
+def should_skip(rel: Path, is_dir: bool, gitp):
+    n = rel.name
+    if is_dir and n in IGNORE_DIRS: return True
+    if n in IGNORE_NAMES: return True
+    for pat in IGNORE_PATTERNS:
+        if fnmatch.fnmatch(n, pat): return True
+    for pat in gitp:
+        neg = pat.startswith('!')
+        pattern = pat[1:] if neg else pat
+        if fnmatch.fnmatch(n, pattern): return not neg
+    return False
+
+def walk_files(root: Path, text_only=True):
+    gitp = load_gitignore(root)
+    for top, dirs, files in os.walk(root, topdown=True):
+        top_p = Path(top)
+        rel_top = top_p.relative_to(root)
+        dirs[:] = [d for d in dirs if not should_skip(rel_top / d, True, gitp)]
+        for f in files:
+            rel = rel_top / f if rel_top.parts else Path(f)
+            if should_skip(rel, False, gitp): continue
+            fp = root / rel
+            if text_only and (not is_text_file(fp)): continue
+            yield rel
+
+def fuzzy_score(name: str, q: str):
+    name, q = name.lower(), q.lower()
+    if not q: return 0.0
+    qi = 0; first = last = None
+    for i,ch in enumerate(name):
+        if qi < len(q) and ch == q[qi]:
+            if first is None: first = i
+            last = i; qi += 1
+    if qi != len(q): return 0.0
+    span = (last - first + 1) if first is not None else len(name)
+    return len(q)/span
+
+def search_files(root: Path, q: str, limit=2000):
+    res = [(fuzzy_score(str(r), q), str(r)) for r in walk_files(root, text_only=False)]
+    res = [s for s in sorted(res, key=lambda x:(-x[0],x[1])) if s[0] > 0]
+    return [r for _,r in res][:limit]
+
+def search_lines(root: Path, q: str, limit=2000):
+    ql = q.lower(); out=[]
+    for rel in walk_files(root, text_only=True):
+        fp = root / rel
+        try: txt = fp.read_text(errors='replace')
+        except Exception: continue
+        for i,line in enumerate(txt.splitlines(), 1):
+            if ql in line.lower():
+                out.append((str(rel), i, line.strip()))
+                if len(out) >= limit: return out
+    return out
+
+# State
+@dataclass
+class State:
+    cwd: Path = field(default_factory=lambda: Path.cwd().resolve())
+    entries: list[Path] = field(default_factory=list)
+    selected: int = 0
+    top: int = 0
+    mode: str = "browser"
+    input_buf: str = ""
+    status: str = "Ready"
+    last_output: str | None = None
+    show_output: bool = False
+    out_scroll: int = 0
+    preview_scroll: int = 0
+    preview_line: int | None = None
+    selection_mode: bool = False
+    sel_start: int | None = None
+    sel_end: int | None = None
+    clipboard_path: str | None = None
+    clipboard_action: str | None = None
+    search_mode: str | None = None
+    search_results: list = field(default_factory=list)
+    search_sel: int = 0
+    force_redraw: bool = True
+    dir_history: dict = field(default_factory=dict)  # path -> selected filename
+
+    def reload(self, remember_child: Path | None = None):
         try:
             self.entries = sorted(list(self.cwd.iterdir()), key=lambda p: (not p.is_dir(), p.name.lower()))
         except Exception:
-            self.entries=[]
-        self.selected = 0
-        self.top_index = 0
-        self.mode = "browser"
-        self.input_buffer=""
-        self.status="Ready"
-        self.last_output=None
-        self.show_last_output=False
-        self.output_scroll=0
-        self.preview_scroll=0
-        self.pending_key=None
-        self.pending_action=None
-        self.clipboard_path=None
-        self.clipboard_action=None
-        self.preview_selected_line = None
-        self.selection_mode = False
-        self.selection_start = None
-        self.selection_end = None
-        self.entries_mtimes = {}
-        self.search_mode = None
-        self.search_results = []
-        self.search_selected = 0
-        self.fuzzy_type = None
-    def save_position(self):
-        self.history[str(self.cwd)] = (self.selected, self.top_index)
-    def restore_position(self):
-        key = str(self.cwd)
-        if key in self.history:
-            self.selected, self.top_index = self.history[key]
-            if self.selected >= len(self.entries):
-                self.selected = max(0, len(self.entries) - 1)
-            if self.top_index >= len(self.entries):
-                self.top_index = max(0, len(self.entries) - 1)
-    def reload(self):
-        try:
-            self.entries = sorted(list(self.cwd.iterdir()), key=lambda p: (not p.is_dir(), p.name.lower()))
-        except Exception:
-            self.entries=[]
-        self.restore_position()
-        if self.selected>=len(self.entries): self.selected=max(0,len(self.entries)-1)
+            self.entries = []
+        
+        # Try to restore selection based on child dir or history
+        if remember_child:
+            for i, entry in enumerate(self.entries):
+                try:
+                    if entry.resolve() == remember_child.resolve():
+                        self.selected = i
+                        break
+                except Exception:
+                    pass
+        elif str(self.cwd) in self.dir_history:
+            remembered = self.dir_history[str(self.cwd)]
+            for i, entry in enumerate(self.entries):
+                if entry.name == remembered:
+                    self.selected = i
+                    break
+        
+        # Ensure selected index is valid
+        self.selected = min(self.selected, max(0, len(self.entries)-1))
+
+        # Keep preview state reset
         self.preview_scroll = 0
-        self.preview_selected_line = None
-        self.clear_selection()
-        self.entries_mtimes = {str(p): p.stat().st_mtime if p.exists() else 0 for p in self.entries}
-    def clear_selection(self):
-        self.selection_mode = False
-        self.selection_start = None
-        self.selection_end = None
-    def get_selected_range(self):
-        if self.selection_start is None or self.selection_end is None:
-            return None, None
-        return min(self.selection_start, self.selection_end), max(self.selection_start, self.selection_end)
-    def check_fs_changes(self):
+        self.preview_line = None
+        self.sel_start = self.sel_end = None
+
+        # IMPORTANT: make the selected entry visible when opening a directory.
+        # Place it near the top (with a small offset) so the user sees where they landed.
         try:
-            current_list = sorted(list(self.cwd.iterdir()), key=lambda p: (not p.is_dir(), p.name.lower()))
+            self.top = max(0, self.selected - 2)
         except Exception:
-            current_list = []
-        names_now = [p.name for p in current_list]
-        names_old = [p.name for p in self.entries]
-        if names_now != names_old:
-            self.reload()
-            self.status = "fs: directory changed " + funny_suffix()
-            return
-        changed = False
-        for p in current_list:
-            key = str(p)
-            try:
-                m = p.stat().st_mtime
-            except Exception:
-                m = 0
-            old = self.entries_mtimes.get(key)
-            if old is None:
-                changed = True
-                break
-            if m != old:
-                changed = True
-                break
-        if changed:
-            self.reload()
-            self.status = "fs: entries updated " + funny_suffix()
+            self.top = 0
+
+        self.force_redraw = True
+
+    def selected_path(self):
+        return self.entries[self.selected] if self.entries and 0 <= self.selected < len(self.entries) else None
+
+    def ensure_visible(self, visible_height: int, scrolloff: int = 5):
+        """Adjust self.top so the selected entry is visible within the viewport.
+        Behavior requested: don't scroll down until selection is at bottom - scrolloff.
+        This makes minimal vertical movement and prefers showing the full list when possible.
+        """
+        try:
+            n = len(self.entries)
+            if n == 0:
+                self.top = 0
+                return
+            # clamp visible_height to at least 1
+            vh = max(1, visible_height)
+            # if all entries fit, show from 0
+            if n <= vh:
+                self.top = 0
+                return
+            # desired visible window is [top, top+vh-1]
+            # Ensure selected is not above the top (scroll up if needed)
+            if self.selected < self.top:
+                self.top = max(0, self.selected)
+                return
+            # If selected is below the window: move it so it's at bottom - scrolloff
+            if self.selected > (self.top + vh - 1):
+                self.top = max(0, min(self.selected - (vh - 1 - scrolloff), n - vh))
+                return
+            # If selected is too close to bottom (within scrolloff), nudge down
+            bottom_threshold = (self.top + vh - 1) - scrolloff
+            if self.selected > bottom_threshold:
+                new_top = max(0, min(self.selected - (vh - 1 - scrolloff), n - vh))
+                self.top = new_top
+                return
+            # otherwise leave top unchanged (prefer not to scroll)
+        except Exception:
+            pass
+
+# Curses drawing
 def init_colors():
-    curses.start_color()
-    curses.use_default_colors()
-    curses.init_pair(1, curses.COLOR_BLUE, -1)
-    curses.init_pair(2, curses.COLOR_MAGENTA, -1)
-    curses.init_pair(3, curses.COLOR_CYAN, -1)
-    curses.init_pair(4, curses.COLOR_GREEN, -1)
-    curses.init_pair(5, curses.COLOR_YELLOW, -1)
-    curses.init_pair(6, curses.COLOR_RED, -1)
-    curses.init_pair(7, curses.COLOR_BLACK, curses.COLOR_WHITE)
-    curses.init_pair(8, curses.COLOR_WHITE, -1)
-    curses.init_pair(9, curses.COLOR_BLUE, curses.COLOR_WHITE)
-    curses.init_pair(10, curses.COLOR_BLUE, -1)
-    curses.init_pair(11, curses.COLOR_BLACK, curses.COLOR_CYAN)
-    curses.init_pair(12, curses.COLOR_YELLOW, -1)
-    curses.init_pair(13, curses.COLOR_BLACK, curses.COLOR_GREEN)
-    color_map = {}
-    if PYGMENTS_AVAILABLE:
+    curses.start_color(); curses.use_default_colors()
+    for i,c in enumerate((curses.COLOR_BLUE, curses.COLOR_MAGENTA, curses.COLOR_CYAN,
+                         curses.COLOR_GREEN, curses.COLOR_YELLOW, curses.COLOR_RED), start=1):
+        try: curses.init_pair(i, c, -1)
+        except Exception: pass
+    try:
         color_map = {
             Token.Keyword: curses.color_pair(1),
-            Token.Keyword.Constant: curses.color_pair(1),
-            Token.Keyword.Declaration: curses.color_pair(1),
-            Token.Keyword.Namespace: curses.color_pair(1),
-            Token.Keyword.Pseudo: curses.color_pair(1),
-            Token.Keyword.Reserved: curses.color_pair(1),
-            Token.Keyword.Type: curses.color_pair(1),
             Token.Name.Function: curses.color_pair(2),
-            Token.Name.Builtin: curses.color_pair(2),
             Token.Name.Class: curses.color_pair(3),
-            Token.Name: curses.color_pair(8),
             Token.String: curses.color_pair(4),
-            Token.Literal.String: curses.color_pair(4),
             Token.Comment: curses.color_pair(5),
-            Token.Operator: curses.color_pair(5),
-            Token.Punctuation: curses.color_pair(2),
             Token.Number: curses.color_pair(6),
-            Token.Name.Decorator: curses.color_pair(2),
-            Token.Name.Exception: curses.color_pair(6),
-            Token.Name.Variable: curses.color_pair(8),
-            Token.Generic: curses.color_pair(5),
-        }
+        } if PYGMENTS else {}
+    except Exception:
+        color_map = {}
     return color_map
-def clipped_addnstr(win,y,x,text,max_width,color=curses.A_NORMAL):
-    if y<0 or text is None: return
-    try: win.addnstr(y,x,str(text),max_width,color)
-    except Exception: pass
-def draw_browser(win,st,left_w,height,color_sel):
-    for idx in range(height):
-        entry_idx = st.top_index + idx
-        if entry_idx<len(st.entries):
-            entry=st.entries[entry_idx]
-            name=entry.name
-            display = ""
-            try:
-                if not entry.exists():
-                    display = f"❓ {name}"
-                    color = curses.color_pair(6) if entry_idx != st.selected else color_sel
-                elif entry.is_dir():
-                    display = f"{FOLDER_EMOJI} {name}/"
-                    if entry.is_symlink():
-                        color = curses.color_pair(4) if entry_idx != st.selected else color_sel
-                    else:
-                        color = curses.color_pair(1) if entry_idx != st.selected else color_sel
-                else:
-                    ext = entry.suffix.lower()
-                    emo = FILETYPE_EMOJI.get(ext, FILETYPE_EMOJI.get(entry.name, FILE_EMOJI))
-                    display = f"{emo} {name}"
-                    color = curses.color_pair(8) if entry_idx != st.selected else color_sel
-            except Exception:
-                display = f"❓ {name}"
-                color = curses.color_pair(6) if entry_idx != st.selected else color_sel
-            clipped_addnstr(win,idx,0,display,left_w-1,color)
-def render_with_pygments_curses(win, y, x, path: Path, content: str, color_map, max_lines, max_cols, scroll=0, selected_line=None, selection_start=None, selection_end=None):
+
+def draw_browser(win, st: State, leftw: int, height: int, sel_attr):
+    # Clear entire browser area first
+    for r in range(height):
+        try: win.addnstr(r, 0, " "*(leftw-1), leftw-1)
+        except Exception: pass
+    
+    visible = st.entries[st.top:st.top+height]
+    for i,entry in enumerate(visible):
+        idx = st.top + i
+        emo = emoji_for(entry)
+        name = entry.name + ('/' if entry.is_dir() else '')
+        disp = f"{emo} {name}"
+        attr = sel_attr if idx == st.selected else (curses.color_pair(3) if entry.is_dir() else curses.color_pair(0))
+        clipped_add(win, i, 0, disp, leftw-1, attr)
+
+def render_text_preview(win, y, x, path: Path, content: str, cmap, nlines, ncols, scroll=0, sel_line=None, sel_range=None):
     lines = content.splitlines()
-    line_num_width = len(str(len(lines))) + 2
-    if selection_start is not None and selection_end is not None:
-        lower, upper = min(selection_start, selection_end), max(selection_start, selection_end)
-    else:
-        lower, upper = None, None
-    if not PYGMENTS_AVAILABLE:
-        for i, line in enumerate(lines[scroll:scroll+max_lines]):
-            line_num = scroll + i + 1
-            is_selected = (lower is not None and upper is not None and lower <= line_num <= upper)
-            is_single_cursor = (line_num == selected_line) and not is_selected
-            if is_selected:
-                line_color = curses.color_pair(13) | curses.A_BOLD
-            elif is_single_cursor:
-                line_color = curses.color_pair(11) | curses.A_BOLD
-            else:
-                line_color = curses.A_NORMAL
-            try: win.addnstr(y+i, x, f"{line_num:>{line_num_width-1}} ", line_num_width, curses.color_pair(5))
-            except: pass
-            try: win.addnstr(y+i, x+line_num_width, line[:max_cols-line_num_width], max_cols-line_num_width, line_color)
-            except: pass
+    lineno_w = len(str(len(lines))) + 2
+    sel_low, sel_high = (None, None) if not sel_range else (min(sel_range), max(sel_range))
+    # Non-pygments simple rendering — use A_REVERSE for selection/cursor for simple inverted style
+    if not PYGMENTS:
+        for r, line in enumerate(lines[scroll:scroll+nlines]):
+            ln = scroll + r + 1
+            sel = (sel_low is not None and sel_low <= ln <= sel_high)
+            single = (ln == sel_line and not sel)
+            try: win.addnstr(y+r, x, f"{ln:>{lineno_w-1}} ", lineno_w, curses.color_pair(5))
+            except Exception: pass
+            # Use A_REVERSE for both visual selection and single line cursor
+            attr = curses.A_REVERSE | (curses.A_BOLD if sel else 0) if (sel or single) else curses.A_NORMAL
+            clipped_add(win, y+r, x+lineno_w, line, ncols-lineno_w, attr)
         return
-    try: lexer = guess_lexer_for_filename(str(path), content)
-    except: lexer = TextLexer()
-    for row, line in enumerate(lines[scroll:scroll+max_lines]):
-        line_num = scroll + row + 1
-        cx = x + line_num_width
-        is_selected = (lower is not None and upper is not None and lower <= line_num <= upper)
-        is_single_cursor = (line_num == selected_line) and not is_selected
-        try: win.addnstr(y+row, x, f"{line_num:>{line_num_width-1}} ", line_num_width, curses.color_pair(5))
-        except: pass
-        if is_selected:
-            try: win.addnstr(y+row, cx, line[:max_cols-line_num_width], max_cols-line_num_width, curses.color_pair(13) | curses.A_BOLD)
-            except: pass
-        elif is_single_cursor:
-            try: win.addnstr(y+row, cx, line[:max_cols-line_num_width], max_cols-line_num_width, curses.color_pair(11) | curses.A_BOLD)
-            except: pass
-        else:
-            for ttype, value in lex(line, lexer):
-                color = curses.A_NORMAL
-                parent = ttype
-                while parent != Token and parent not in color_map:
-                    parent = parent.parent
-                if parent in color_map:
-                    color = color_map[parent]
-                i = 0
-                while i < len(value) and (cx - x - line_num_width) < (max_cols - line_num_width):
-                    ch = value[i]
-                    try:
-                        win.addnstr(y+row, cx, ch, 1, color)
-                    except Exception:
-                        pass
-                    cx += 1
-                    i += 1
-def draw_preview(win,st,left_w,width,height,color_status,color_map):
-    start_x=left_w
-    preview_w=max(10,width-left_w)
-    for y in range(height):
-        try: win.addch(y,left_w-1,'|')
-        except: pass
-    if st.pending_action:
-        typ,target=st.pending_action
-        clipped_addnstr(win,0,start_x,f"Confirm {typ} {getattr(target,'name',str(target))}? (y/n)",preview_w-1)
-        return
-    if st.show_last_output and st.last_output:
-        lines = st.last_output.splitlines()[st.output_scroll:st.output_scroll+height-1]
-        for i,line in enumerate(lines): clipped_addnstr(win,i,start_x,line,preview_w-1)
-        clipped_addnstr(win,height-1,start_x,"(press 'o' to hide last output)",preview_w-1)
-        return
-    if st.search_mode:
-        if st.search_mode == "ff":
-            clipped_addnstr(win,0,start_x,"File search results:",preview_w-1)
-            for i,result in enumerate(st.search_results[st.output_scroll:st.output_scroll+height-2]):
-                idx = st.output_scroll + i
-                sel = " "
-                if idx == st.search_selected:
-                    sel = "▶"
-                clipped_addnstr(win,i+1,start_x,f"{sel} {result}"[:preview_w-1],preview_w-1,curses.color_pair(8) if idx==st.search_selected else curses.A_NORMAL)
-            clipped_addnstr(win,height-1,start_x,"Enter to open, Esc to cancel",preview_w-1)
-            return
-        elif st.search_mode == "fl":
-            clipped_addnstr(win,0,start_x,"Line search results:",preview_w-1)
-            for i,result in enumerate(st.search_results[st.output_scroll:st.output_scroll+height-2]):
-                idx = st.output_scroll + i
-                path,ln,text = result
-                display = f"{path}:{ln}: {text.strip()}"
-                sel = " "
-                if idx == st.search_selected:
-                    sel = "▶"
-                clipped_addnstr(win,i+1,start_x,f"{sel} {display}"[:preview_w-1],preview_w-1,curses.color_pair(8) if idx==st.search_selected else curses.A_NORMAL)
-            clipped_addnstr(win,height-1,start_x,"Enter to open file at line, Esc to cancel",preview_w-1)
-            return
-    if not st.entries:
-        clipped_addnstr(win,0,start_x,"<empty>",preview_w-1); return
     try:
-        sel=st.entries[st.selected]
+        lexer = guess_lexer_for_filename(str(path), content)
     except Exception:
-        clipped_addnstr(win,0,start_x,"<no selection>",preview_w-1); return
-    try:
-        if not sel.exists():
-            clipped_addnstr(win,0,start_x,"[missing file or broken symlink]",preview_w-1,curses.color_pair(6))
-            return
-        if sel.is_dir():
-            clipped_addnstr(win,0,start_x,"<directory>",preview_w-1)
-            try:
-                items = sorted(list(sel.iterdir()), key=lambda p: (not p.is_dir(), p.name.lower()))
-                for i, child in enumerate(items[:height-1]):
-                    try:
-                        display_path = str(child.relative_to(sel))
-                    except Exception:
-                        display_path = str(child)
-                    if child.is_dir():
-                        display_path = f"{FOLDER_EMOJI} {display_path}/"
-                        if child.is_symlink():
-                            color = curses.color_pair(4)
-                        else:
-                            color = curses.color_pair(10)
-                    elif not is_text_file(child):
-                        ext = child.suffix.lower()
-                        emo = FILETYPE_EMOJI.get(ext, FILETYPE_EMOJI.get(child.name, FILE_EMOJI))
-                        display_path = f"{emo} {display_path}"
-                        color = curses.color_pair(5)
-                    else:
-                        ext = child.suffix.lower()
-                        emo = FILETYPE_EMOJI.get(ext, FILETYPE_EMOJI.get(child.name, FILE_EMOJI))
-                        display_path = f"{emo} {display_path}"
-                        color = curses.color_pair(8)
-                    clipped_addnstr(win,i+1,start_x,display_path,preview_w-1,color)
-            except Exception as e:
-                clipped_addnstr(win,1,start_x,f"[cannot list: {e}]",preview_w-1)
-        else:
-            if not is_text_file(sel):
-                clipped_addnstr(win,0,start_x,"[binary/non-text]",preview_w-1,curses.color_pair(5)); return
-            txt = safe_read_text(sel)
-            if txt.startswith("[error reading file:"):
-                clipped_addnstr(win,0,start_x,txt,preview_w-1,curses.color_pair(6)); return
-            selected_in_view = None
-            if st.preview_selected_line is not None and not st.selection_mode:
-                relative = st.preview_selected_line - st.preview_scroll - 1
-                if 0 <= relative < (height-1):
-                    selected_in_view = st.preview_selected_line
-                else:
-                    selected_in_view = None
-            sel_start, sel_end = st.get_selected_range()
-            render_with_pygments_curses(win, 0, start_x, sel, txt, color_map, height-1, preview_w-1,
-                                        scroll=st.preview_scroll, selected_line=selected_in_view,
-                                        selection_start=sel_start, selection_end=sel_end)
-    except Exception:
-        clipped_addnstr(win,0,start_x,"[preview failed]",preview_w-1,curses.color_pair(6))
-def draw_status_and_prompt(win,st,width,height,color_status):
-    try:
-        display_path = st.cwd.name
-        status_text = st.status
-        if st.selection_mode:
-            sel_start, sel_end = st.get_selected_range()
-            if sel_start is not None and sel_end is not None:
-                status_text += f" [VISUAL: lines {sel_start}-{sel_end}]"
-            else:
-                status_text += " [VISUAL]"
-        clipped_addnstr(win,height-2,0,f"{display_path}  ·  {status_text} {funny_suffix()}"[:width-1],width-1,curses.color_pair(12))
-        if st.mode=="prompt":
-            prompt="> "+st.input_buffer
-        elif st.mode=="fuzzy_input":
-            prompt = f"{st.fuzzy_type}> "+st.input_buffer
-        else:
-            prompt="> (':' for prompt, q quit, o toggles, v/V select, ff/fl fuzzy: press f then f or l, Esc cancel)"
-        clipped_addnstr(win,height-1,0,prompt[:width-1],width-1,curses.color_pair(8))
-        if st.mode in ("prompt","fuzzy_input"):
-            try: win.move(height-1,min(len(prompt),width-1),0)
-            except: pass
-    except: pass
-def open_in_editor_safe(stdscr,path:Path):
-    try: curses.endwin()
-    except: pass
-    opened=False
-    try:
-        suffix = path.suffix.lower()
-        exe = shutil.which("nvim") or shutil.which("vim") or shutil.which("code") or shutil.which("subl") or shutil.which("nano")
-        if exe:
-            subprocess.run([exe,str(path)])
-            opened=True
-        elif sys.platform.startswith("win"):
-            try:
-                os.startfile(str(path))
-                opened=True
-            except Exception:
-                opened=False
-        else:
-            editor=os.environ.get("EDITOR")
-            if editor:
-                subprocess.run([editor,str(path)])
-                opened=True
-            else:
-                opener=shutil.which("xdg-open") or shutil.which("open")
-                if opener:
-                    subprocess.run([opener,str(path)])
-                    opened=True
-    except Exception:
-        opened=False
-    finally:
-        try: curses.doupdate(); stdscr.refresh()
-        except: pass
-    return opened
-def open_powershell_at(cwd: Path):
-    if not sys.platform.startswith("win"): return False,"PowerShell only on Windows"
-    try:
-        subprocess.Popen(["cmd","/c","start","powershell","-NoExit","-Command",f"Set-Location -LiteralPath '{str(cwd)}'"],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-        return True,"powershell[...]"
-    except Exception as e:
-        return False,f"failed: {e}"
-def safe_delete_path(path:Path):
-    try:
-        if path.is_dir():
-            try: path.rmdir()
-            except OSError: shutil.rmtree(path)
-        else: path.unlink()
-        return True,None
-    except Exception as e:
-        return False,str(e)
-def unique_dest(dest:Path):
-    if not dest.exists(): return dest
-    base,suffix,parent = dest.stem,dest.suffix,dest.parent
-    i=1
-    while True:
-        candidate=parent/f"{base}_copy{i}{suffix}"
-        if not candidate.exists(): return candidate
-        i+=1
-def perform_paste_action(st:TState):
-    if not st.clipboard_path or not st.clipboard_action: return False,"nothing to paste"
-    src=Path(st.clipboard_path)
-    if not src.exists(): return False,"source missing"
-    dst=st.cwd/src.name
-    if st.clipboard_action=="copy":
-        dst=unique_dest(dst)
-        try: shutil.copy2(src,dst); return True,f"copied to {dst.name}"
-        except Exception as e: return False,f"copy failed: {e}"
-    elif st.clipboard_action=="move":
-        dst=unique_dest(dst)
-        try: shutil.move(str(src),str(dst)); st.clipboard_path=None; st.clipboard_action=None; return True,f"moved to {dst.name}"
-        except Exception as e: return False,f"move failed: {e}"
-    return False,"unknown clipboard action"
-def copy_selected_text_to_clipboard(st: TState):
-    if not st.entries or not st.entries[st.selected].is_file():
-        return False, "no file selected"
-    sel_start, sel_end = st.get_selected_range()
-    if sel_start is None or sel_end is None:
-        return False, "no text selected"
-    sel_file = st.entries[st.selected]
-    if not is_text_file(sel_file):
-        return False, "not a text file"
-    txt = safe_read_text(sel_file)
-    lines = txt.splitlines()
-    selected_lines = lines[sel_start-1:sel_end]
-    selected_text = "\n".join(selected_lines)
-    ok, info = copy_to_clipboard_verbose(selected_text)
-    return ok, info
-def fuzzy_score(name, query):
-    name = name.lower()
-    query = query.lower()
-    if not query:
-        return 0.0
-    qi = 0
-    first = None
-    last = None
-    for i,ch in enumerate(name):
-        if qi < len(query) and ch == query[qi]:
-            if first is None:
-                first = i
-            last = i
-            qi += 1
-    if qi != len(query):
-        return 0.0
-    span = (last - first + 1) if first is not None else len(name)
-    return len(query) / span
-def search_files(root: Path, query: str, limit: int = 2000):
-    results = []
-    for rel in walk_all_files(root):
-        s = str(rel)
-        score = fuzzy_score(s, query)
-        if score > 0:
-            results.append((score, s))
-    results.sort(key=lambda x: (-x[0], x[1]))
-    return [r for _,r in results][:limit]
-def search_lines(root: Path, query: str, limit: int = 2000):
-    q = query.lower()
-    results = []
-    for rel in walk_all_files(root):
-        fp = root / rel
-        if not is_text_file(fp): continue
+        lexer = TextLexer()
+    for r, line in enumerate(lines[scroll:scroll+nlines]):
+        ln = scroll + r + 1
+        cx = x + lineno_w
+        try: win.addnstr(y+r, x, f"{ln:>{lineno_w-1}} ", lineno_w, curses.color_pair(5))
+        except Exception: pass
+        if sel_low and sel_low <= ln <= sel_high:
+            # visual selection range -> inverted + bold
+            clipped_add(win, y+r, cx, line, ncols-lineno_w, curses.A_REVERSE | curses.A_BOLD); continue
+        if sel_line == ln:
+            # current single line -> inverted
+            clipped_add(win, y+r, cx, line, ncols-lineno_w, curses.A_REVERSE); continue
         try:
-            txt = fp.read_text(errors="replace")
+            for ttype, val in lex(line, lexer):
+                parent = ttype
+                while parent != Token and parent not in cmap:
+                    parent = parent.parent
+                color = cmap.get(parent, curses.A_NORMAL)
+                for ch in val:
+                    if (cx - x - lineno_w) >= (ncols - lineno_w): break
+                    try: win.addnstr(y+r, cx, ch, 1, color)
+                    except Exception: pass
+                    cx += 1
         except Exception:
-            continue
-        for i,line in enumerate(txt.splitlines(), start=1):
-            if q in line.lower():
-                results.append((str(rel), i, line.strip()))
-                if len(results) >= limit:
-                    return results
-    return results
-def handle_browser_key(st:TState,key,stdscr,color_map):
-    if key in (ord('h'),): key=curses.KEY_LEFT
-    elif key in (ord('j'),): key=curses.KEY_DOWN
-    elif key in (ord('k'),): key=curses.KEY_UP
-    elif key in (ord('l'),): key=curses.KEY_RIGHT
-    if st.pending_action:
-        if key in (ord('y'),ord('Y')):
-            typ,target=st.pending_action; st.pending_action=None
-            if typ=="delete": ok,msg=safe_delete_path(target); st.status="deleted " + funny_suffix() if ok else f"delete failed: {msg}"; st.reload()
-            return None
-        elif key in (ord('n'),ord('N'),27): st.pending_action=None; st.status="cancelled " + funny_suffix(); return None
-        else: return None
-    if st.pending_key:
-        pk=st.pending_key; st.pending_key=None
-        if pk=='d' and key==ord('d'):
-            if not st.entries: st.status="nothing selected " + funny_suffix(); return None
-            st.pending_action=("delete",st.entries[st.selected]); st.status=f"Confirm delete {st.entries[st.selected].name}?"; return None
-        if pk=='y' and key==ord('y'):
-            if not st.entries: st.status="nothing selected " + funny_suffix(); return None
-            st.clipboard_path=str(st.entries[st.selected]); st.clipboard_action="copy"; st.status=f"yanked {st.entries[st.selected].name} " + funny_suffix(); return None
-        if pk=='m' and key==ord('m'):
-            if not st.entries: st.status="nothing selected " + funny_suffix(); return None
-            st.clipboard_path=str(st.entries[st.selected]); st.clipboard_action="move"; st.status=f"marked {st.entries[st.selected].name} for move " + funny_suffix(); return None
-        if pk=='f' and key==ord('f'):
-            st.mode="fuzzy_input"; st.fuzzy_type="ff"; st.input_buffer=""; st.status="ff: type to fuzzy-search files " + funny_suffix()
-            return None
-        if pk=='f' and key==ord('l'):
-            st.mode="fuzzy_input"; st.fuzzy_type="fl"; st.input_buffer=""; st.status="fl: type to fuzzy-search lines " + funny_suffix()
-            return None
-    if key == 27:
-        if st.selection_mode:
-            st.clear_selection()
-            st.status = "Selection cancelled " + funny_suffix()
-            return None
-        elif st.pending_key:
-            st.pending_key = None
-            st.status = "Cancelled " + funny_suffix()
-            return None
-        if st.search_mode:
-            st.search_mode=None
-            st.search_results=[]
-            st.search_selected=0
-            st.status="search cancelled " + funny_suffix()
-            return None
+            clipped_add(win, y+r, cx, line, ncols-lineno_w)
+
+def draw_preview(win, st: State, leftw:int, width:int, height:int, cmap):
+    sx = leftw
+    w = max(10, width - leftw)
+    for r in range(height):
+        try: win.addnstr(r, sx, " " * (w), w)
+        except Exception: pass
+    for y in range(height):
+        try: win.addch(y, leftw-1, "|")
+        except Exception: pass
+    if st.show_output and st.last_output:
+        lines = st.last_output.splitlines()[st.out_scroll:st.out_scroll+height-1]
+        for i,l in enumerate(lines): clipped_add(win, i, sx, l, w-1)
+        clipped_add(win, height-1, sx, "(press 'o' to hide output)", w-1)
+        return
+    sel = st.selected_path()
+    if not sel:
+        clipped_add(win, 0, sx, "<empty>", w-1); return
+    if sel.is_dir():
+        clipped_add(win, 0, sx, "<directory>", w-1)
+        try:
+            items = sorted(list(sel.iterdir()), key=lambda p:(not p.is_dir(), p.name.lower()))
+            for i,child in enumerate(items[:height-1]):
+                name = f"{emoji_for(child)} {child.name}{'/' if child.is_dir() else ''}"
+                clipped_add(win, i+1, sx, name, w-1, curses.color_pair(10) if child.is_dir() else curses.color_pair(8))
+        except Exception as e:
+            clipped_add(win, 1, sx, f"[cannot list: {e}]", w-1)
+    else:
+        if not is_text_file(sel):
+            clipped_add(win, 0, sx, "[binary/non-text]", w-1, curses.color_pair(5)); return
+        txt = safe_read(sel)
+        sel_in_view = st.preview_line if st.preview_line and (st.preview_line-1 >= st.preview_scroll) else None
+        sel_range = (st.sel_start, st.sel_end) if st.sel_start and st.sel_end else None
+        render_text_preview(win, 0, sx, sel, txt, cmap or {}, height-1, w-1, scroll=st.preview_scroll, sel_line=sel_in_view, sel_range=sel_range)
+
+def draw_status(win, st: State, width:int, height:int):
+    try:
+        clipped_add(win, height-2, 0, f"{st.cwd.name} -> {st.status}"[:width-1], width-1, curses.color_pair(12))
+        if st.mode == "prompt": prompt = "> " + st.input_buf
+        elif st.mode == "fuzzy": prompt = f"{st.search_mode}> " + st.input_buf
+        else: prompt = "> (':' prompt, q quit, o toggles, v visual, Esc cancel)"
+        clipped_add(win, height-1, 0, prompt[:width-1], width-1, curses.color_pair(8))
+        if st.mode in ("prompt","fuzzy"):
+            try: win.move(height-1, min(len(prompt), width-1))
+            except Exception: pass
+    except Exception:
+        pass
+
+# Actions
+def unique_dest(p: Path):
+    if not p.exists(): return p
+    base, suf, parent = p.stem, p.suffix, p.parent
+    i = 1
+    while True:
+        cand = parent / f"{base}_copy{i}{suf}"
+        if not cand.exists(): return cand
+        i += 1
+
+def perform_paste(st: State):
+    if not st.clipboard_path or not st.clipboard_action: return False, "nothing to paste"
+    src = Path(st.clipboard_path)
+    if not src.exists(): return False, "source missing"
+    dst = st.cwd / src.name
+    if st.clipboard_action == "copy":
+        dst = unique_dest(dst)
+        try:
+            if src.is_dir(): shutil.copytree(src, dst)
+            else: shutil.copy2(src, dst)
+            return True, f"copied to {dst.name}"
+        except Exception as e: return False, f"copy failed: {e}"
+    if st.clipboard_action == "move":
+        dst = unique_dest(dst)
+        try:
+            shutil.move(str(src), str(dst))
+            st.clipboard_path = st.clipboard_action = None
+            return True, f"moved to {dst.name}"
+        except Exception as e: return False, f"move failed: {e}"
+    return False, "unknown action"
+
+def copy_selection_to_clipboard(st: State):
+    sp = st.selected_path()
+    if not sp or not sp.is_file() or not is_text_file(sp): return False, "no text file selected"
+    s,e = st.sel_start, st.sel_end
+    if s is None or e is None: return False, "no selection"
+    txt = safe_read(sp)
+    lines = txt.splitlines()
+    selected = "\n".join(lines[s-1:e])
+    ok, info = write_clipboard(selected)
+    return ok, info
+
+# Keys handling
+def handle_keys(st: State, key, stdscr, cmap, hist):
+    def enter_dir(target: Path):
+        # Remember current selection before changing directory
+        current_sel = st.selected_path()
+        if current_sel:
+            st.dir_history[str(st.cwd)] = current_sel.name
+        
+        old_cwd = st.cwd
+        st.cwd = target.resolve()
+        
+        # If going to parent, remember which child we came from
+        remember_child = old_cwd if target == old_cwd.parent else None
+        st.reload(remember_child=remember_child)
+        
+        st.status = f"cd -> {st.cwd}"
+        # Force complete redraw on directory change
+        stdscr.clear()
+        stdscr.refresh()
+
+    if key in (ord('h'),): key = curses.KEY_LEFT
+    if key in (ord('j'),): key = curses.KEY_DOWN
+    if key in (ord('k'),): key = curses.KEY_UP
+    if key in (ord('l'),): key = curses.KEY_RIGHT
+
     if key in (ord('v'), ord('V')):
-        if not st.entries or not st.entries[st.selected].is_file():
-            st.status = "Visual mode only for text files " + funny_suffix()
-            return None
-        if not is_text_file(st.entries[st.selected]):
-            st.status = "Visual mode only for text files " + funny_suffix()
-            return None
+        sp = st.selected_path()
+        if not sp or not sp.is_file() or not is_text_file(sp):
+            st.status = "Visual only for text files"; return None
         if not st.selection_mode:
             st.selection_mode = True
-            if st.preview_selected_line is not None:
-                current_line = st.preview_selected_line
-            else:
-                current_line = st.preview_scroll + 1
-            st.selection_start = current_line
-            st.selection_end = current_line
-            st.preview_selected_line = current_line
-            st.status = "VISUAL MODE - move cursor, press v/V again or Esc when done " + funny_suffix()
-        else:
-            ok, info = copy_selected_text_to_clipboard(st)
-            st.clear_selection()
-            st.status = f"Copied to clipboard ({info}) " + (funny_suffix() if ok else "")
-        return None
-    height,_ = stdscr.getmaxyx()
-    if st.selection_mode and key in (curses.KEY_UP, curses.KEY_DOWN):
-        if st.entries and st.entries[st.selected].is_file() and is_text_file(st.entries[st.selected]):
-            txt = safe_read_text(st.entries[st.selected])
-            total_lines = len(txt.splitlines()) or 1
-            cur = st.selection_end if st.selection_end is not None else (st.selection_start if st.selection_start is not None else 1)
-            if key == curses.KEY_UP:
-                if cur > 1: cur -= 1
-            elif key == curses.KEY_DOWN:
-                if cur < total_lines: cur += 1
-            st.selection_end = cur
-            st.preview_selected_line = cur
-            if cur <= st.preview_scroll:
-                st.preview_scroll = max(0, cur - 1)
-            elif cur > st.preview_scroll + (height - 3):
-                st.preview_scroll = cur - (height - 3)
+            cur = st.preview_line or (st.preview_scroll + 1)
+            st.sel_start = st.sel_end = cur; st.preview_line = cur
+            st.status = "VISUAL: move cursor, press v again or Esc"
             return None
+        else:
+            ok,info = copy_selection_to_clipboard(st)
+            st.selection_mode = False; st.status = f"Copied ({info})" if ok else f"Copy failed: {info}"; return None
+
+    if key == 27:
+        if st.selection_mode:
+            st.selection_mode = False; st.sel_start = st.sel_end = None; st.status = "Selection cancelled"; return None
+        if st.mode in ("prompt","fuzzy"):
+            st.mode = "browser"; st.input_buf = ""; return None
+        if st.search_mode:
+            st.search_mode = None; st.search_results = []; st.search_sel = 0; st.status = "search cancelled"; return None
+
     if st.search_mode:
-        if key==curses.KEY_UP:
-            st.search_selected = max(0, st.search_selected-1)
-            if st.search_selected < st.output_scroll:
-                st.output_scroll = st.search_selected
-            return None
-        if key==curses.KEY_DOWN:
-            st.search_selected = min(len(st.search_results)-1, st.search_selected+1)
-            if st.search_selected >= st.output_scroll + (height-2):
-                st.output_scroll = st.search_selected - (height-3)
-            return None
+        if key == curses.KEY_UP:
+            st.search_sel = max(0, st.search_sel - 1); st.out_scroll = max(0, st.search_sel); return None
+        if key == curses.KEY_DOWN:
+            st.search_sel = min(len(st.search_results)-1, st.search_sel + 1); return None
         if key in (ord("\n"), curses.KEY_RIGHT):
-            if st.search_mode=="ff":
+            if st.search_mode == "ff":
                 if not st.search_results: return None
-                target = st.cwd / st.search_results[st.search_selected]
+                target = st.cwd / Path(st.search_results[st.search_sel])
                 if target.exists() and target.is_file():
-                    st.save_position()
-                    st.cwd = (st.cwd).resolve()
-                    st.reload()
+                    st.cwd = st.cwd.resolve(); st.reload()
                     for i,p in enumerate(st.entries):
                         try:
-                            if p.resolve() == target.resolve():
-                                st.selected = i
-                                break
-                        except Exception:
-                            pass
-                    st.status=f"Opened {target.name} " + funny_suffix()
-                    opened = open_in_editor_safe(stdscr,target)
-                    st.status="Ready " + funny_suffix() if opened else "No editor found " + funny_suffix()
-                    st.search_mode=None
-                    st.search_results=[]
-                    return None
-            if st.search_mode=="fl":
-                if not st.search_results: return None
-                path,ln,text = st.search_results[st.search_selected]
-                target = st.cwd / Path(path)
+                            if p.resolve() == target.resolve(): st.selected = i; break
+                        except Exception: pass
+                    st.status = f"Opened {target.name}"; open_in_editor_safe(stdscr, target); st.search_mode=None; st.search_results=[]; return None
+            if st.search_mode == "fl":
+                rec = st.search_results[st.search_sel]; target = st.cwd / Path(rec[0]); ln = rec[1]
                 if target.exists():
-                    st.save_position()
-                    st.cwd = (st.cwd).resolve()
-                    st.reload()
+                    st.cwd = st.cwd.resolve(); st.reload()
                     for i,p in enumerate(st.entries):
                         try:
-                            if p.resolve() == target.resolve():
-                                st.selected = i
-                                break
-                        except Exception:
-                            pass
-                    st.preview_selected_line = ln
-                    st.preview_scroll = max(0, ln-1)
-                    st.search_mode=None
-                    st.search_results=[]
-                    st.status=f"Jumped to {path}:{ln} " + funny_suffix()
-                    return None
+                            if p.resolve() == target.resolve(): st.selected = i; break
+                        except Exception: pass
+                    st.preview_line = ln; st.preview_scroll = max(0, ln-1); st.search_mode=None; st.search_results=[]; st.status = f"Jumped to {rec[0]}:{ln}"; return None
         return None
-    if key==curses.KEY_UP:
-        st.selected=max(0,st.selected-1)
-        if st.selected < st.top_index + 5: st.top_index = max(0, st.selected - 5)
-        st.preview_scroll = 0
-        st.preview_selected_line = None
-        st.clear_selection()
-    elif key==curses.KEY_DOWN:
-        st.selected=min(len(st.entries)-1,st.selected+1)
-        if st.selected >= st.top_index + (height-2)-5: st.top_index = st.selected - (height-2)+5
-        st.preview_scroll = 0
-        st.preview_selected_line = None
-        st.clear_selection()
-    elif key==curses.KEY_LEFT:
-        st.save_position()
-        parent=st.cwd.parent
-        if parent!=st.cwd:
-            try: st.cwd=parent.resolve(); st.reload(); st.status=f"cd -> {st.cwd} " + funny_suffix(); st.show_last_output=False
-            except: st.status="Cannot go parent " + funny_suffix()
-    elif key in (curses.KEY_RIGHT,ord("\n")):
-        if not st.entries: return None
-        sel=st.entries[st.selected]
+
+    sel = st.selected_path()
+    h = stdscr.getmaxyx()[0] if stdscr else 25
+
+    if key == curses.KEY_UP:
+        st.selected = max(0, st.selected - 1)
+        if st.selected < st.top + 5: st.top = max(0, st.selected - 5)
+        st.preview_scroll = 0; st.preview_line = None; st.selection_mode=False; st.force_redraw=True
+    elif key == curses.KEY_DOWN:
+        st.selected = min(len(st.entries)-1, st.selected + 1)
+        if st.selected >= st.top + (h-2) - 5: st.top = st.selected - (h-2) + 5
+        st.preview_scroll = 0; st.preview_line = None; st.selection_mode=False; st.force_redraw=True
+    elif key == curses.KEY_LEFT:
+        parent = st.cwd.parent
+        if parent != st.cwd:
+            try: enter_dir(parent)
+            except Exception: st.status = "Cannot go parent"
+    elif key == curses.KEY_RIGHT or key == ord("\n"):
+        if not sel: return None
         if sel.is_dir():
-            st.save_position()
-            try: st.cwd=sel.resolve(); st.reload(); st.status=f"cd -> {st.cwd} " + funny_suffix(); st.show_last_output=False
-            except: st.status="Cannot enter directory " + funny_suffix()
+            try: enter_dir(sel)
+            except Exception: st.status = "Cannot enter"
         else:
-            st.status=f"Opening {sel.name}... " + funny_suffix(); opened=open_in_editor_safe(stdscr,sel); st.status="Ready " + funny_suffix() if opened else "No editor found " + funny_suffix(); st.show_last_output=False
-    elif key in (ord(':'),ord('p')): st.mode="prompt"; st.input_buffer=""
-    elif key==ord('o'): st.show_last_output=not st.show_last_output
-    elif key==curses.KEY_NPAGE:
-        st.top_index = min(len(st.entries)-1, st.top_index + (height-2)//2)
-    elif key==curses.KEY_PPAGE:
-        st.top_index = max(0, st.top_index - (height-2)//2)
-    elif key==4:
-        sel = st.entries[st.selected] if st.entries else None
-        if st.show_last_output and st.last_output:
-            st.output_scroll += (height-2)//2
-            max_scroll = max(0, len(st.last_output.splitlines()) - (height-2))
-            st.output_scroll = min(st.output_scroll, max_scroll)
+            st.status = f"Opening {sel.name}..."; open_in_editor_safe(stdscr, sel); st.status = "Ready"
+    elif key == ord(':') or key == ord('p'):
+        st.mode = "prompt"; st.input_buf = ""
+    elif key == ord('o'):
+        st.show_output = not st.show_output
+    elif key == curses.KEY_NPAGE:
+        st.top = min(max(0, len(st.entries)-1), st.top + (h-2)//2); st.force_redraw=True
+    elif key == curses.KEY_PPAGE:
+        st.top = max(0, st.top - (h-2)//2); st.force_redraw=True
+    elif key == 4:
+        if st.show_output and st.last_output:
+            st.out_scroll = min(max(0, len(st.last_output.splitlines())-(h-2)), st.out_scroll + (h-2)//2)
         elif sel and sel.is_file() and is_text_file(sel):
-            st.preview_scroll += (height-2)//2
-            txt_lines = safe_read_text(sel).splitlines()
-            max_scroll = max(0, len(txt_lines) - (height-2))
-            st.preview_scroll = min(st.preview_scroll, max_scroll)
-    elif key==21:
-        sel = st.entries[st.selected] if st.entries else None
-        if st.show_last_output and st.last_output:
-            st.output_scroll -= (height-2)//2
-            st.output_scroll = max(0, st.output_scroll)
+            txt_lines = safe_read(sel).splitlines(); st.preview_scroll = min(max(0, len(txt_lines)-(h-2)), st.preview_scroll + (h-2)//2)
+    elif key == 21:
+        if st.show_output and st.last_output:
+            st.out_scroll = max(0, st.out_scroll - (h-2)//2)
         elif sel and sel.is_file() and is_text_file(sel):
-            st.preview_scroll -= (height-2)//2
-            st.preview_scroll = max(0, st.preview_scroll)
-    elif key==ord('d'): st.pending_key='d'
-    elif key==ord('y'): st.pending_key='y'
-    elif key==ord('m'): st.pending_key='m'
-    elif key==ord('f'): st.pending_key='f'
-    elif key==ord('P'): ok,msg=perform_paste_action(st); st.status=(msg + " " + funny_suffix()) if ok else f"paste failed: {msg}"; st.reload()
-    elif key in (ord('S'),ord('w')): ok,msg=open_powershell_at(st.cwd); st.status=(msg + " " + funny_suffix()) if ok else f"powershell failed: {msg}"
-    elif key==ord('q'): return "quit"
+            st.preview_scroll = max(0, st.preview_scroll - (h-2)//2)
+    elif key == ord('d'):
+        st.mode = "maybe_delete"; st.input_buf = ""
+    elif key == ord('y'):
+        st.clipboard_path = str(sel) if sel else None; st.clipboard_action = "copy"; st.status = f"yanked {sel.name if sel else ''}"
+    elif key == ord('m'):
+        st.clipboard_path = str(sel) if sel else None; st.clipboard_action = "move"; st.status = f"marked {sel.name if sel else ''}"
+    elif key == ord('f'):
+        st.mode = "fuzzy"; st.input_buf = ""; st.search_mode = "ff"; st.status = "ff: type to fuzzy-search files"
+    elif key == ord('P'):
+        ok,msg = perform_paste(st); st.status = msg if ok else f"paste failed: {msg}"; st.reload()
+    elif key == ord('q'):
+        return "quit"
     elif key == 9:
         return None
-    return None
-def handle_prompt_key(st:TState, key):
-    if st.mode=="fuzzy_input":
-        if key in (curses.KEY_ENTER, ord("\n")):
-            cmd = st.input_buffer.strip()
-            if st.fuzzy_type == "ff":
-                st.search_results = search_files(st.cwd, cmd)
-                st.search_mode = "ff"
-                st.search_selected = 0
-                st.output_scroll = 0
-                st.mode = "browser"
-                st.input_buffer = ""
-                st.status = f"ff results: {len(st.search_results)} " + funny_suffix()
-                return None
-            elif st.fuzzy_type == "fl":
-                st.search_results = search_lines(st.cwd, cmd)
-                st.search_mode = "fl"
-                st.search_selected = 0
-                st.output_scroll = 0
-                st.mode = "browser"
-                st.input_buffer = ""
-                st.status = f"fl results: {len(st.search_results)} " + funny_suffix()
-                return None
-        elif key in (curses.KEY_BACKSPACE, 127):
-            st.input_buffer = st.input_buffer[:-1]
-        elif 32 <= key < 127:
-            st.input_buffer += chr(key)
-        elif key == 27:
+    else:
+        if getattr(st, 'mode', None) == "maybe_delete" and key == ord('d'):
+            if sel:
+                ok,msg = safe_delete(sel)
+                st.reload(); st.status = "deleted" if ok else f"delete failed: {msg}"
             st.mode = "browser"
-            st.fuzzy_type = None
-            st.input_buffer = ""
-        return None
-    if key in (curses.KEY_ENTER, ord("\n")):
-        cmd = st.input_buffer.strip()
-        args = cmd.split()
-        if not args:
-            st.mode = "browser"
-            st.input_buffer = ""
+        else:
             return None
-        if cmd == "catlsr":
-            txt = generate_catlsr_text(st.cwd)
-            ok, info = copy_to_clipboard_verbose(txt)
-            st.last_output = txt
-            st.show_last_output = True
-            st.status = f"[copied to clipboard method: {info}] " + funny_suffix() if ok else f"[warning] failed: {info}"
-        elif cmd.startswith("cd "):
-            st.save_position()
-            arg = cmd[3:].strip() or os.path.expanduser("~")
-            newdir = (st.cwd / arg).resolve() if not Path(arg).is_absolute() else Path(arg).resolve()
-            if newdir.is_dir():
-                st.cwd = newdir
-                st.reload()
-                st.status = f"cd -> {st.cwd} " + funny_suffix()
-                st.show_last_output = False
-            else:
-                st.status = f"Not a dir: {newdir} " + funny_suffix()
-        elif cmd == "ls":
-            st.reload()
-            st.status = "ls " + funny_suffix()
-        elif args[0] == "rename" and len(args) == 3:
-            src = (st.cwd / args[1])
-            dst = (st.cwd / args[2])
-            if src.exists():
-                try:
-                    src.rename(dst)
-                    st.status = f"Renamed {src.name} -> {dst.name} " + funny_suffix()
-                    st.reload()
-                except Exception as e:
-                    st.status = f"Rename failed: {e} " + funny_suffix()
-            else:
-                st.status = "Source file/dir does not exist. " + funny_suffix()
-        elif args[0] == "mkdir" and len(args) == 2:
-            path = st.cwd / args[1]
-            try:
-                path.mkdir(parents=False, exist_ok=False)
-                st.status = f"Directory {args[1]} created " + funny_suffix()
-                st.reload()
-            except Exception as e:
-                st.status = f"mkdir failed: {e} " + funny_suffix()
-        elif args[0] == "touch" and len(args) == 2:
-            path = st.cwd / args[1]
-            try:
-                path.touch(exist_ok=False)
-                st.status = f"File {args[1]} created " + funny_suffix()
-                st.reload()
-            except Exception as e:
-                st.status = f"touch failed: {e} " + funny_suffix()
-        elif args[0] == "duplicate" and len(args) == 2:
-            src = st.cwd / args[1]
-            if src.exists():
-                dst = unique_dest(st.cwd / (src.stem + src.suffix))
-                try:
-                    if src.is_dir():
-                        shutil.copytree(src, dst)
-                    else:
-                        shutil.copy2(src, dst)
-                    st.status = f"Duplicated {src.name} to {dst.name} " + funny_suffix()
-                    st.reload()
-                except Exception as e:
-                    st.status = f"Duplicate failed: {e} " + funny_suffix()
-            else:
-                st.status = "Source does not exist. " + funny_suffix()
-        elif args[0] == "chmod" and len(args) == 3:
-            path = st.cwd / args[2]
-            try:
-                mode = int(args[1], 8)
-                path.chmod(mode)
-                st.status = f"chmod {args[1]} {args[2]} " + funny_suffix()
-            except Exception as e:
-                st.status = f"chmod failed: {e} " + funny_suffix()
-        elif args[0] == "cat" and len(args) == 2:
-            path = st.cwd / args[1]
-            if path.exists() and path.is_file():
-                txt = safe_read_text(path)
-                st.last_output = txt
-                st.show_last_output = True
-                st.status = f"Showing {args[1]} " + funny_suffix()
-            else:
-                st.status = "File does not exist. " + funny_suffix()
-        elif args[0] == "move" and len(args) == 3:
-            src = st.cwd / args[1]
-            dst = st.cwd / args[2]
-            if src.exists():
-                try:
-                    shutil.move(str(src), str(dst))
-                    st.status = f"Moved {src.name} -> {dst.name} " + funny_suffix()
-                    st.reload()
-                except Exception as e:
-                    st.status = f"Move failed: {e} " + funny_suffix()
-            else:
-                st.status = "Source does not exist. " + funny_suffix()
-        elif cmd in ("exit", "quit"):
-            return "quit"
-        elif cmd == "help":
-            st.status = ("Commands: cd <path>, ls, catlsr, cat <f>, mkdir <d>, touch <f>, "
-                         "rename <src> <dst>, move <src> <dst>, duplicate <src>, chmod <mode> <f>, quit " + funny_suffix())
-        else:
-            st.status = f"Unknown: {cmd} " + funny_suffix()
-        st.mode = "browser"
-        st.input_buffer = ""
-    elif key in (curses.KEY_BACKSPACE, 127):
-        st.input_buffer = st.input_buffer[:-1]
-    elif 32 <= key < 127:
-        st.input_buffer += chr(key)
-    elif key == 27:
-        st.mode = "browser"
-    elif key == 9:
-        return None
     return None
-def run(stdscr):
-    try: curses.curs_set(0)
-    except: pass
-    stdscr.keypad(True)
-    curses.mousemask(curses.ALL_MOUSE_EVENTS | curses.REPORT_MOUSE_POSITION)
-    curses.use_default_colors()
-    color_map=None
-    if curses.has_colors():
-        color_map = init_colors()
-    st=TState(Path.cwd())
-    st.reload()
-    last_check = time.time()
-    while True:
-        height,width=stdscr.getmaxyx(); stdscr.erase()
-        if height<MIN_HEIGHT or width<MIN_WIDTH:
-            clipped_addnstr(stdscr,0,0,f"Resize terminal min {MIN_WIDTH}x{MIN_HEIGHT}",width-1); stdscr.refresh(); c=stdscr.getch()
-            if c==ord("q"): break
-            continue
-        if time.time() - last_check > 0.8:
-            st.check_fs_changes()
-            last_check = time.time()
-        left_w=max(20,width//4); left_h=height-2
-        selection_color = curses.A_REVERSE
-        draw_browser(stdscr,st,left_w,left_h,selection_color)
-        draw_preview(stdscr,st,left_w,width,left_h,None,color_map)
-        draw_status_and_prompt(stdscr,st,width,height,None)
-        try: curses.curs_set(1 if st.mode in ("prompt","fuzzy_input") else 0)
-        except: pass
-        stdscr.refresh()
-        try: key=stdscr.getch()
-        except KeyboardInterrupt: break
-        except: continue
-        if key==curses.KEY_MOUSE:
-            try:
-                _,mx,my,_,bstate=curses.getmouse()
-                if 0<=mx<left_w and 0<=my<left_h:
-                    new_sel = st.top_index + my
-                    if 0<=new_sel<len(st.entries):
-                        st.selected=new_sel
-                        st.preview_scroll=0
-                        st.preview_selected_line=None
-                        st.clear_selection()
-                elif mx>=left_w and 0<=my<left_h:
-                    if not st.pending_action:
-                        if st.show_last_output and st.last_output:
-                            if bstate & curses.BUTTON4_PRESSED:
-                                st.output_scroll = max(0, st.output_scroll - 3)
-                            elif bstate & curses.BUTTON5_PRESSED:
-                                total_lines = len(st.last_output.splitlines())
-                                max_scroll = max(0, total_lines - (left_h-1))
-                                st.output_scroll = min(max_scroll, st.output_scroll + 3)
-                        elif st.entries and st.entries[st.selected].is_file() and is_text_file(st.entries[st.selected]):
-                            if bstate & curses.BUTTON1_PRESSED:
-                                clicked_line = st.preview_scroll + my + 1
-                                st.preview_selected_line = clicked_line
-                                if st.selection_mode:
-                                    st.selection_end = clicked_line
-                            elif bstate & curses.BUTTON4_PRESSED:
-                                st.preview_scroll = max(0, st.preview_scroll - 3)
-                            elif bstate & curses.BUTTON5_PRESSED:
-                                txt = safe_read_text(st.entries[st.selected])
-                                total_lines = len(txt.splitlines())
-                                max_scroll = max(0, total_lines - (left_h-1))
-                                st.preview_scroll = min(max_scroll, st.preview_scroll + 3)
-            except: pass
-        if st.mode=="browser":
-            res=handle_browser_key(st,key,stdscr,color_map)
-        elif st.mode in ("prompt","fuzzy_input"):
-            res=handle_prompt_key(st,key)
-        else:
-            res=None
-        if res=="quit": break
-def write_error_log(exc:BaseException):
+
+def safe_delete(p: Path):
     try:
-        tb="".join(traceback.format_exception(type(exc),exc,exc.__traceback__))
-        ERROR_LOG.write_text(tb,encoding="utf-8",errors="replace")
-    except: pass
-def main_safe():
+        if p.is_dir():
+            try: p.rmdir()
+            except OSError: shutil.rmtree(p)
+        else:
+            p.unlink()
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+def open_in_editor_safe(stdscr, path: Path):
+    try: curses.endwin()
+    except Exception: pass
+    opened = False
+    try:
+        exe = shutil.which("nvim") or shutil.which("vim") or shutil.which("code") or shutil.which("subl") or shutil.which("nano")
+        if exe:
+            subprocess.run([exe, str(path)])
+            opened = True
+        elif sys.platform.startswith("win"):
+            try: os.startfile(str(path)); opened = True
+            except Exception: opened = False
+        else:
+            editor = os.environ.get("EDITOR")
+            if editor: subprocess.run([editor, str(path)]); opened = True
+            else:
+                opener = shutil.which("xdg-open") or shutil.which("open")
+                if opener: subprocess.run([opener, str(path)]); opened = True
+    except Exception:
+        opened = False
+    finally:
+        try: curses.doupdate(); stdscr.refresh()
+        except Exception: pass
+    return opened
+
+def handle_prompt(st: State, key):
+    if st.mode == "fuzzy":
+        if key in (curses.KEY_ENTER, ord("\n")):
+            q = st.input_buf.strip()
+            if st.search_mode == "ff":
+                st.search_results = search_files(st.cwd, q); st.search_mode = "ff"; st.mode = "browser"; st.status = f"ff results: {len(st.search_results)}"
+            elif st.search_mode == "fl":
+                st.search_results = search_lines(st.cwd, q); st.search_mode = "fl"; st.mode = "browser"; st.status = f"fl results: {len(st.search_results)}"
+            st.input_buf = ""; return None
+        if key in (curses.KEY_BACKSPACE, 127):
+            st.input_buf = st.input_buf[:-1]; return None
+        if 32 <= key < 127:
+            st.input_buf += chr(key); return None
+        if key == 27:
+            st.mode = "browser"; st.input_buf = ""; st.search_mode = None; return None
+        return None
+
+    if key in (curses.KEY_ENTER, ord("\n")):
+        cmd = st.input_buf.strip(); args = cmd.split()
+        if not args: st.mode = "browser"; st.input_buf = ""; return None
+        try:
+            if args[0] == "catlsr":
+                st.last_output = generate_catlsr(st.cwd); st.show_output = True; st.status = "[catlsr]"
+                ok, info = write_clipboard(st.last_output)
+                if ok: st.status += f" (copied via {info})"
+            elif args[0] == "cd":
+                arg = " ".join(args[1:]) or os.path.expanduser("~")
+                nd = (st.cwd / arg).resolve() if not Path(arg).is_absolute() else Path(arg).resolve()
+                if nd.is_dir(): st.cwd = nd; st.reload(); st.status = f"cd -> {st.cwd}"
+                else: st.status = f"Not a dir: {nd}"
+            elif args[0] == "ls":
+                st.reload(); st.status = "ls"
+            elif args[0] == "rename" and len(args) == 3:
+                s = st.cwd / args[1]; d = st.cwd / args[2]
+                if s.exists(): s.rename(d); st.reload(); st.status = f"Renamed {s.name} -> {d.name}"
+                else: st.status = "Source does not exist."
+            elif args[0] == "mkdir" and len(args) == 2:
+                (st.cwd / args[1]).mkdir(exist_ok=False); st.reload(); st.status = f"mkdir {args[1]}"
+            elif args[0] == "touch" and len(args) == 2:
+                (st.cwd / args[1]).touch(exist_ok=False); st.reload(); st.status = f"touch {args[1]}"
+            elif args[0] == "duplicate" and len(args) == 2:
+                s = st.cwd / args[1]
+                if s.exists():
+                    dst = unique_dest(st.cwd / (s.stem + s.suffix))
+                    if s.is_dir(): shutil.copytree(s, dst)
+                    else: shutil.copy2(s, dst)
+                    st.reload(); st.status = f"Duplicated {args[1]}"
+                else: st.status = "Source not found"
+            elif args[0] == "chmod" and len(args) == 3:
+                p = st.cwd / args[2]; p.chmod(int(args[1], 8)); st.status = f"chmod {args[1]} {args[2]}"
+            elif args[0] == "cat" and len(args) == 2:
+                p = st.cwd / args[1]
+                if p.exists(): st.last_output = safe_read(p); st.show_output=True; st.status = f"Showing {args[1]}"
+                else: st.status = "File does not exist."
+            elif args[0] == "move" and len(args) == 3:
+                s = st.cwd / args[1]; d = st.cwd / args[2]
+                if s.exists(): shutil.move(str(s), str(d)); st.reload(); st.status = f"Moved {args[1]}"
+                else: st.status = "Source does not exist."
+            elif args[0] in ("exit", "quit"):
+                return "quit"
+            elif args[0] == "help":
+                st.status = "Commands: cd <path>, ls, catlsr, cat <f>, mkdir, touch, rename, duplicate, chmod, move, quit"
+            else:
+                st.status = f"Unknown: {cmd}"
+        except Exception as e:
+            st.status = f"Error: {e}"; log_exc(e)
+        st.mode = "browser"; st.input_buf = ""; return None
+    if key in (curses.KEY_BACKSPACE, 127): st.input_buf = st.input_buf[:-1]; return None
+    if 32 <= key < 127: st.input_buf += chr(key); return None
+    if key == 27: st.mode = "browser"; st.input_buf = ""; return None
+    return None
+
+def generate_catlsr(root: Path):
+    buf = io.StringIO(); any_file=False
+    for rel in walk_files(root):
+        any_file = True
+        buf.write(f"{SPLIT}\n{rel}\n{SPLIT}\n")
+        try: buf.write((root/rel).read_text(errors='replace'))
+        except Exception: pass
+        buf.write("\n")
+    if not any_file: buf.write("[no files found]\n")
+    buf.write(f"{SPLIT}\npreprompt.txt\n{SPLIT}\n{read_preprompt(root)}\n")
+    return buf.getvalue()
+
+def read_preprompt(root: Path):
+    p = root / "preprompt.txt"
+    if p.exists():
+        try:
+            txt = p.read_text(errors='replace'); return txt if txt.endswith("\n") else txt + "\n"
+        except Exception:
+            return "please analyze this project, add tell how to possibly extend it\n"
+    return "please analyze this project, add tell how to possibly extend it\n"
+
+def main_curses(stdscr):
+    try: curses.curs_set(0)
+    except Exception: pass
+    stdscr.keypad(True)
+    try: curses.mousemask(curses.ALL_MOUSE_EVENTS | curses.REPORT_MOUSE_POSITION)
+    except Exception: pass
+
+    cmap = init_colors() if curses.has_colors() else {}
+    st = State(); st.reload()
+    last_check = time.time()
+
+    while True:
+        h,w = stdscr.getmaxyx()
+        
+        # Force clear and redraw if needed
+        if st.force_redraw:
+            stdscr.clear()
+            st.force_redraw = False
+        else:
+            stdscr.erase()
+            
+        if h < MIN_H or w < MIN_W:
+            clipped_add(stdscr, 0, 0, f"Resize terminal min {MIN_W}x{MIN_H}", w-1)
+            stdscr.refresh()
+            c = stdscr.getch()
+            if c == ord('q'): break
+            continue
+
+        if time.time() - last_check > 0.8:
+            try:
+                entries_now = sorted(list(st.cwd.iterdir()), key=lambda p:(not p.is_dir(), p.name.lower()))
+                if [p.name for p in entries_now] != [p.name for p in st.entries]:
+                    st.reload(); st.status = "fs changed"
+            except Exception:
+                pass
+            last_check = time.time()
+
+        leftw = max(20, w//4); left_h = h-2
+        # Make sure the selected entry is visible within the left pane before drawing.
+        try:
+            st.ensure_visible(left_h, scrolloff=5)
+        except Exception:
+            pass
+        draw_browser(stdscr, st, leftw, left_h, curses.A_REVERSE)
+        draw_preview(stdscr, st, leftw, w, left_h, cmap)
+        draw_status(stdscr, st, w, h)
+        try: curses.curs_set(1 if st.mode in ("prompt","fuzzy") else 0)
+        except Exception: pass
+        stdscr.refresh()
+
+        try: key = stdscr.getch()
+        except KeyboardInterrupt: break
+        except Exception: continue
+
+        if key == curses.KEY_MOUSE:
+            try:
+                _, mx, my, _, bstate = curses.getmouse()
+                if 0 <= mx < leftw and 0 <= my < left_h:
+                    new = st.top + my
+                    if 0 <= new < len(st.entries): st.selected = new; st.preview_scroll = 0; st.preview_line = None; st.selection_mode=False
+                elif mx >= leftw and 0 <= my < left_h:
+                    if st.show_output and st.last_output:
+                        if bstate & curses.BUTTON4_PRESSED: st.out_scroll = max(0, st.out_scroll - 3)
+                        elif bstate & curses.BUTTON5_PRESSED:
+                            total = len(st.last_output.splitlines()); st.out_scroll = min(max(0, total-(left_h-1)), st.out_scroll + 3)
+                    elif st.entries and st.selected_path().is_file():
+                        if bstate & curses.BUTTON1_PRESSED:
+                            cl = st.preview_scroll + my + 1; st.preview_line = cl
+                            if st.selection_mode: st.sel_end = cl
+                        elif bstate & curses.BUTTON4_PRESSED: st.preview_scroll = max(0, st.preview_scroll - 3)
+                        elif bstate & curses.BUTTON5_PRESSED:
+                            txt = safe_read(st.selected_path()); total = len(txt.splitlines()); st.preview_scroll = min(max(0, total-(left_h-1)), st.preview_scroll + 3)
+            except Exception:
+                pass
+            continue
+
+        if st.mode in ("prompt","fuzzy"):
+            res = handle_prompt(st, key)
+            if res == "quit": break
+            continue
+
+        try:
+            res = handle_keys(st, key, stdscr, cmap, {})
+            if res == "quit": break
+        except Exception as e:
+            log_exc(e)
+            st.status = f"error: {e}"
+
+def main():
     try:
         if sys.platform.startswith("win"):
-            try: import curses
-            except: print("Windows: pip install windows-curses"); time.sleep(2.0)
-        curses.wrapper(run)
-    except Exception as exc:
-        write_error_log(exc)
-        excerpt="".join(traceback.format_exception_only(type(exc),exc)).strip()
-        try: print(f"fiander crashed.\nLog: {ERROR_LOG.resolve()}\nImmediate: {excerpt}",file=sys.stderr)
-        except: pass
-        try: time.sleep(3.0)
-        except: pass
-def main(): main_safe()
-if __name__=="__main__": main()
+            try: import curses as _;
+            except Exception:
+                print("Windows: please install windows-curses (pip install windows-curses)"); time.sleep(1.0)
+        curses.wrapper(main_curses)
+    except Exception as e:
+        log_exc(e)
+        try: print("fiander_zen_clipfix3 crashed. See fiander_error.log", file=sys.stderr)
+        except Exception: pass
+
+if __name__ == "__main__":
+    main()
