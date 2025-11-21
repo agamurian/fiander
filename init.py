@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 # fiander_zen_clipfix3_inverted.py — emoji width fixes + simple inverted selection
 # This variant uses curses.A_REVERSE for selection highlighting in the code preview
+# Added: Shift+S opens PowerShell in the current folder in the same terminal window,
+#        w opens PowerShell in the current folder in a new Windows Terminal window,
+#        e opens Windows Explorer in the current folder.
+# OS: Windows, terminal: Windows Terminal, shell: PowerShell, explorer: Windows Explorer
 
 from __future__ import annotations
 import os, sys, locale, time, fnmatch, shutil, subprocess, traceback, io
@@ -537,6 +541,71 @@ def copy_selection_to_clipboard(st: State):
     ok, info = write_clipboard(selected)
     return ok, info
 
+# New: Shell / Explorer helpers (Windows-focused)
+def open_shell_same_window(stdscr, path: Path):
+    """Open PowerShell in the same terminal window (blocking) then return to curses."""
+    try:
+        try: curses.endwin()
+        except Exception: pass
+        # Prefer powershell.exe; run interactive shell in cwd
+        exe = shutil.which("powershell.exe") or shutil.which("pwsh") or shutil.which("powershell")
+        if exe:
+            # Launch interactive PowerShell in the given cwd. Do not use -NoExit: we want user to interact and exit to return to the app.
+            subprocess.run([exe], cwd=str(path))
+        else:
+            # Fallback to cmd
+            subprocess.run(["cmd.exe"], cwd=str(path))
+    except Exception as e:
+        log_exc(e)
+    finally:
+        try: curses.doupdate(); stdscr.refresh()
+        except Exception: pass
+
+def open_shell_new_window(stdscr, path: Path):
+    """Open PowerShell in a new Windows Terminal window (non-blocking if possible)."""
+    try:
+        # Prefer Windows Terminal 'wt' which supports -d for directory
+        wt = shutil.which("wt")
+        pwsh = shutil.which("pwsh") or shutil.which("powershell.exe") or shutil.which("powershell")
+        if wt:
+            # Open new Windows Terminal tab/window with PowerShell in the directory.
+            # Using 'new-window' isn't necessary; 'wt -d <dir> powershell' opens a new window.
+            cmd = [wt, "-d", str(path), pwsh or "powershell.exe"]
+            # Use Popen so we don't block the app
+            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            # Fallback: use start to open a new window running powershell
+            if os.name == "nt":
+                # 'start' is an internal command; use cmd /c start
+                if pwsh:
+                    subprocess.Popen(["cmd", "/c", "start", "powershell", "-NoExit", "-Command", f"Set-Location -LiteralPath '{str(path)}'; {pwsh}"], shell=False)
+                else:
+                    subprocess.Popen(["cmd", "/c", "start", "powershell", "-NoExit"], shell=False)
+            else:
+                # Non-windows fallback: spawn a detached terminal emulator
+                subprocess.Popen([pwsh or "powershell"], cwd=str(path))
+    except Exception as e:
+        log_exc(e)
+    finally:
+        try: curses.doupdate(); stdscr.refresh()
+        except Exception: pass
+
+def open_explorer(path: Path):
+    """Open Windows Explorer at the given path."""
+    try:
+        if os.name == "nt":
+            try:
+                os.startfile(str(path))
+            except Exception:
+                subprocess.Popen(["explorer", str(path)])
+        else:
+            # cross-platform fallback: try xdg-open / open
+            opener = shutil.which("xdg-open") or shutil.which("open")
+            if opener:
+                subprocess.Popen([opener, str(path)])
+    except Exception as e:
+        log_exc(e)
+
 # Keys handling
 def handle_keys(st: State, key, stdscr, cmap, hist):
     def enter_dir(target: Path):
@@ -613,6 +682,38 @@ def handle_keys(st: State, key, stdscr, cmap, hist):
 
     sel = st.selected_path()
     h = stdscr.getmaxyx()[0] if stdscr else 25
+
+    # New keybindings:
+    # Shift+S -> uppercase 'S' -> open shell in same terminal window (PowerShell) at st.cwd
+    if key == ord('S'):
+        try:
+            st.status = "Opening PowerShell (same window)..."
+            stdscr.refresh()
+            open_shell_same_window(stdscr, st.cwd)
+            st.status = "Returned from shell"
+        except Exception as e:
+            st.status = f"shell failed: {e}"; log_exc(e)
+        return None
+
+    # 'w' -> open shell in new Windows Terminal window
+    if key == ord('w'):
+        try:
+            st.status = "Opening PowerShell (new window)..."
+            stdscr.refresh()
+            open_shell_new_window(stdscr, st.cwd)
+            st.status = "Opened new window"
+        except Exception as e:
+            st.status = f"open new shell failed: {e}"; log_exc(e)
+        return None
+
+    # 'e' -> open explorer in current folder
+    if key == ord('e'):
+        try:
+            open_explorer(st.cwd)
+            st.status = "Opened Explorer"
+        except Exception as e:
+            st.status = f"open explorer failed: {e}"; log_exc(e)
+        return None
 
     if key == curses.KEY_UP:
         st.selected = max(0, st.selected - 1)
